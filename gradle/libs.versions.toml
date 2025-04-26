@@ -1,0 +1,18 @@
+[versions]
+androidGradlePlugin = "8.6.0"
+androidxAppcompat = "1.6.1"
+androidxConstraintlayout = "2.1.4"
+opencv = "4.10.0"
+desugarJdkLibs = "2.1.2"
+monitor = "1.7.2"
+
+[libraries]
+android-gradle-plugin = { group = "com.android.tools.build", name = "gradle", version.ref = "androidGradlePlugin" }
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "androidxAppcompat" }
+androidx-constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "androidxConstraintlayout" }
+opencv = { group = "org.opencv", name = "opencv", version.ref = "opencv" }
+desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugarJdkLibs" }
+androidx-monitor = { group = "androidx.test", name = "monitor", version.ref = "monitor" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }
