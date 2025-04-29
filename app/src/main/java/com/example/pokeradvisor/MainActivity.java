@@ -27,9 +27,11 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
 
     private static final String TAG = "PokerAdvisor";
     private static final int CAMERA_PERMISSION_REQUEST_CODE = 100;
+    private static final long FRAME_PROCESS_INTERVAL_MS = 2000; // Process every 2 seconds
 
     private JavaCamera2View cameraView;
     private Mat rgbaMat;
+    private long lastProcessedTime = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -116,36 +118,44 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
 
     @Override
     public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame inputFrame) {
-        Log.i(TAG, "onCameraFrame called");
         rgbaMat = inputFrame.rgba();
+
+        // Throttle frame processing to once every 2 seconds
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastProcessedTime < FRAME_PROCESS_INTERVAL_MS) {
+            // Add the green overlay even on skipped frames to maintain visual consistency
+            Mat overlay = new Mat(rgbaMat.size(), rgbaMat.type(), new Scalar(0, 255, 0, 100));
+            Core.addWeighted(rgbaMat, 0.8, overlay, 0.2, 0.0, rgbaMat);
+            overlay.release();
+            return rgbaMat;
+        }
+        lastProcessedTime = currentTime;
+
         Log.d(TAG, "Processing frame: " + rgbaMat.cols() + "x" + rgbaMat.rows());
 
-        // Convert to grayscale for contour detection
-        Mat grayMat = new Mat();
-        Imgproc.cvtColor(rgbaMat, grayMat, Imgproc.COLOR_RGBA2GRAY);
-        Log.d(TAG, "Converted to grayscale: " + grayMat.cols() + "x" + grayMat.rows());
+        // Convert to HSV for color-based segmentation
+        Mat hsvMat = new Mat();
+        Imgproc.cvtColor(rgbaMat, hsvMat, Imgproc.COLOR_RGB2HSV);
+        Log.d(TAG, "Converted to HSV: " + hsvMat.cols() + "x" + hsvMat.rows());
 
-        // Apply a blur to reduce noise
-        Imgproc.GaussianBlur(grayMat, grayMat, new Size(5, 5), 0);
-        Log.d(TAG, "Applied blur: " + grayMat.cols() + "x" + grayMat.rows());
+        // Create a mask for white regions (cards have a white background)
+        Mat mask = new Mat();
+        // White in HSV: Hue doesn't matter, low saturation, high value
+        Scalar lowerWhite = new Scalar(0, 0, 200); // Low saturation, high value
+        Scalar upperWhite = new Scalar(179, 50, 255); // Allow some variation
+        Core.inRange(hsvMat, lowerWhite, upperWhite, mask);
+        Log.d(TAG, "White mask created: " + mask.cols() + "x" + mask.rows());
 
-        // Use adaptive thresholding to better handle varying contrast
-        Mat threshMat = new Mat();
-        Imgproc.adaptiveThreshold(
-                grayMat,
-                threshMat,
-                255,
-                Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
-                Imgproc.THRESH_BINARY_INV,
-                11, // Block size
-                2   // Constant subtracted from mean
-        );
-        Log.d(TAG, "Adaptive threshold applied: " + threshMat.cols() + "x" + threshMat.rows());
+        // Apply morphological operations to clean up the mask
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(5, 5));
+        Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_OPEN, kernel); // Remove noise
+        Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, kernel); // Close small gaps
+        Log.d(TAG, "Morphological operations applied");
 
-        // Find contours
+        // Find contours on the mask
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
-        Imgproc.findContours(threshMat, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+        Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
         Log.d(TAG, "Contours found: " + contours.size());
 
         // List to store identified cards
@@ -156,7 +166,7 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
             MatOfPoint contour = contours.get(i);
             double area = Imgproc.contourArea(contour);
             // Filter out small contours (likely noise)
-            if (area < 1000) { // Lowered threshold to capture smaller cards
+            if (area < 500) { // Lowered threshold to capture smaller cards
                 continue;
             }
 
@@ -165,7 +175,7 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
 
             // Filter by aspect ratio (cards are typically 2.5:3.5, so aspect ratio ~0.714)
             double aspectRatio = (double) boundingRect.width / boundingRect.height;
-            if (aspectRatio < 0.5 || aspectRatio > 0.9) { // Allow some variation
+            if (aspectRatio < 0.4 || aspectRatio > 1.0) { // Relaxed range to allow for overlapping cards
                 continue;
             }
 
@@ -218,10 +228,11 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
         Log.d(TAG, "Green overlay applied");
 
         // Release temporary Mats
-        grayMat.release();
-        threshMat.release();
+        hsvMat.release();
+        mask.release();
         hierarchy.release();
         overlay.release();
+        kernel.release();
 
         return rgbaMat;
     }
