@@ -44,7 +44,6 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
             return;
         }
 
-        // Initialize OpenCV using initLocal() instead of the deprecated initDebug()
         if (!OpenCVLoader.initLocal()) {
             Log.e(TAG, "OpenCV initialization failed");
             Toast.makeText(this, "OpenCV initialization failed", Toast.LENGTH_LONG).show();
@@ -130,10 +129,18 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
         Imgproc.GaussianBlur(grayMat, grayMat, new Size(5, 5), 0);
         Log.d(TAG, "Applied blur: " + grayMat.cols() + "x" + grayMat.rows());
 
-        // Apply threshold to enhance edges
+        // Use adaptive thresholding to better handle varying contrast
         Mat threshMat = new Mat();
-        Imgproc.threshold(grayMat, threshMat, 100, 255, Imgproc.THRESH_BINARY);
-        Log.d(TAG, "Threshold applied: " + threshMat.cols() + "x" + threshMat.rows());
+        Imgproc.adaptiveThreshold(
+                grayMat,
+                threshMat,
+                255,
+                Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
+                Imgproc.THRESH_BINARY_INV,
+                11, // Block size
+                2   // Constant subtracted from mean
+        );
+        Log.d(TAG, "Adaptive threshold applied: " + threshMat.cols() + "x" + threshMat.rows());
 
         // Find contours
         List<MatOfPoint> contours = new ArrayList<>();
@@ -149,12 +156,19 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
             MatOfPoint contour = contours.get(i);
             double area = Imgproc.contourArea(contour);
             // Filter out small contours (likely noise)
-            if (area < 5000) {
+            if (area < 1000) { // Lowered threshold to capture smaller cards
                 continue;
             }
 
             // Get the bounding rectangle for the contour
             Rect boundingRect = Imgproc.boundingRect(contour);
+
+            // Filter by aspect ratio (cards are typically 2.5:3.5, so aspect ratio ~0.714)
+            double aspectRatio = (double) boundingRect.width / boundingRect.height;
+            if (aspectRatio < 0.5 || aspectRatio > 0.9) { // Allow some variation
+                continue;
+            }
+
             // Ensure the ROI is within the frame bounds
             if (boundingRect.x < 0 || boundingRect.y < 0 ||
                     boundingRect.x + boundingRect.width > rgbaMat.cols() ||
@@ -198,7 +212,7 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
                 2 // Thickness
         );
 
-        // Add the green overlay
+        // Add the green overlay after processing to avoid interference
         Mat overlay = new Mat(rgbaMat.size(), rgbaMat.type(), new Scalar(0, 255, 0, 100));
         Core.addWeighted(rgbaMat, 0.8, overlay, 0.2, 0.0, rgbaMat);
         Log.d(TAG, "Green overlay applied");
