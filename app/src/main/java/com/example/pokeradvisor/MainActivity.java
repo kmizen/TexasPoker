@@ -44,7 +44,8 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
             return;
         }
 
-        if (!OpenCVLoader.initDebug()) {
+        // Initialize OpenCV using initLocal() instead of the deprecated initDebug()
+        if (!OpenCVLoader.initLocal()) {
             Log.e(TAG, "OpenCV initialization failed");
             Toast.makeText(this, "OpenCV initialization failed", Toast.LENGTH_LONG).show();
             return;
