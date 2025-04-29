@@ -10,6 +10,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import org.opencv.android.CameraBridgeViewBase;
+import org.opencv.android.JavaCamera2View;
 import org.opencv.android.OpenCVLoader;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
@@ -22,40 +23,43 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
 
     private static final String TAG = "PokerAdvisor";
     private static final int CAMERA_PERMISSION_REQUEST_CODE = 100;
-    private CameraBridgeViewBase cameraView;
-    private Mat mat;
-    private int cameraId = 0; // 0 for rear camera, 1 for front camera
+
+    private JavaCamera2View cameraView;
+    private Mat rgbaMat;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        Log.i(TAG, "onCreate called");
         setContentView(R.layout.activity_main);
-
-        // Initialize OpenCV
-        if (!OpenCVLoader.initDebug()) {
-            Log.e(TAG, "OpenCV initialization failed");
-            Toast.makeText(this, "OpenCV initialization failed", Toast.LENGTH_LONG).show();
-            return;
-        } else {
-            Log.i(TAG, "OpenCV initialized successfully");
-        }
+        Log.i(TAG, "onCreate called");
 
         cameraView = findViewById(R.id.camera_view);
         if (cameraView == null) {
-            Log.e(TAG, "cameraView is null - check activity_main.xml layout");
+            Log.e(TAG, "Camera view not found in layout");
             Toast.makeText(this, "Camera view not found in layout", Toast.LENGTH_LONG).show();
             return;
         }
 
-        cameraView.setCvCameraViewListener(this);
-        cameraView.setCameraIndex(cameraId); // Explicitly set camera index (0 = rear, 1 = front)
-        Log.i(TAG, "Camera index set to: " + cameraId);
+        if (!OpenCVLoader.initDebug()) {
+            Log.e(TAG, "OpenCV initialization failed");
+            Toast.makeText(this, "OpenCV initialization failed", Toast.LENGTH_LONG).show();
+            return;
+        }
+        Log.i(TAG, "OpenCV initialized successfully");
 
-        // Check and request camera permission
+        cameraView.setCvCameraViewListener(this);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Log.i(TAG, "onResume called");
+
+        // Check for camera permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
-            Log.i(TAG, "Requesting camera permission");
+            Log.w(TAG, "Camera permission not granted in onResume");
+            // Request the permission
             ActivityCompat.requestPermissions(this,
                     new String[]{Manifest.permission.CAMERA},
                     CAMERA_PERMISSION_REQUEST_CODE);
@@ -66,57 +70,11 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
-                                           @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        Log.i(TAG, "onRequestPermissionsResult called, requestCode: " + requestCode);
-        if (requestCode == CAMERA_PERMISSION_REQUEST_CODE) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                Log.i(TAG, "Camera permission granted");
-                initializeCamera();
-            } else {
-                Log.w(TAG, "Camera permission denied");
-                Toast.makeText(this, "Camera permission is required to use this app",
-                        Toast.LENGTH_LONG).show();
-                finish();
-            }
-        }
-    }
-
-    private void initializeCamera() {
-        Log.i(TAG, "initializeCamera called");
-        if (cameraView != null) {
-            cameraView.enableView();
-            Log.i(TAG, "cameraView.enableView called");
-        } else {
-            Log.e(TAG, "cameraView is null in initializeCamera");
-        }
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        Log.i(TAG, "onResume called");
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-                == PackageManager.PERMISSION_GRANTED) {
-            if (cameraView != null) {
-                cameraView.enableView();
-                Log.i(TAG, "cameraView.enableView called in onResume");
-            } else {
-                Log.e(TAG, "cameraView is null in onResume");
-            }
-        } else {
-            Log.w(TAG, "Camera permission not granted in onResume");
-        }
-    }
-
-    @Override
     protected void onPause() {
         super.onPause();
         Log.i(TAG, "onPause called");
         if (cameraView != null) {
             cameraView.disableView();
-            Log.i(TAG, "cameraView.disableView called in onPause");
         }
     }
 
@@ -126,44 +84,78 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
         Log.i(TAG, "onDestroy called");
         if (cameraView != null) {
             cameraView.disableView();
-            Log.i(TAG, "cameraView.disableView called in onDestroy");
+        }
+    }
+
+    private void initializeCamera() {
+        Log.i(TAG, "initializeCamera called");
+        if (cameraView != null) {
+            cameraView.setCameraPermissionGranted();
+            cameraView.enableView();
+            Log.i(TAG, "cameraView.enableView called");
+        } else {
+            Log.e(TAG, "Camera view is null in initializeCamera");
         }
     }
 
     @Override
     public void onCameraViewStarted(int width, int height) {
         Log.i(TAG, "onCameraViewStarted called, width: " + width + ", height: " + height);
-        mat = new Mat();
+        rgbaMat = new Mat();
     }
 
     @Override
     public void onCameraViewStopped() {
         Log.i(TAG, "onCameraViewStopped called");
-        if (mat != null) {
-            mat.release();
+        if (rgbaMat != null) {
+            rgbaMat.release();
         }
     }
 
     @Override
     public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame inputFrame) {
         Log.i(TAG, "onCameraFrame called");
-        mat = inputFrame.rgba();
-        Mat gray = new Mat();
-        Imgproc.cvtColor(mat, gray, Imgproc.COLOR_RGBA2GRAY);
-        Imgproc.threshold(gray, gray, 100, 255, Imgproc.THRESH_BINARY);
+        rgbaMat = inputFrame.rgba();
+
+        // Convert to grayscale
+        Mat grayMat = new Mat();
+        Imgproc.cvtColor(rgbaMat, grayMat, Imgproc.COLOR_RGBA2GRAY);
+
+        // Apply edge detection
+        Mat edges = new Mat();
+        Imgproc.Canny(grayMat, edges, 50, 150);
+
+        // Find contours
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
-        Imgproc.findContours(gray, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+        Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
 
-        if (contours.size() > 0) {
-            Log.i(TAG, "Found " + contours.size() + " contours");
-            Imgproc.drawContours(mat, contours, -1, new Scalar(0, 255, 0), 5);
-        } else {
-            Log.i(TAG, "No contours found");
+        // Draw contours on the original frame
+        for (int i = 0; i < contours.size(); i++) {
+            Imgproc.drawContours(rgbaMat, contours, i, new Scalar(0, 255, 0), 2);
         }
 
-        gray.release();
+        // Release temporary Mats
+        grayMat.release();
+        edges.release();
         hierarchy.release();
-        return mat;
+
+        return rgbaMat;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == CAMERA_PERMISSION_REQUEST_CODE) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Log.i(TAG, "Camera permission granted by user");
+                initializeCamera();
+            } else {
+                Log.w(TAG, "Camera permission denied by user");
+                Toast.makeText(this, "Camera permission is required to use this app", Toast.LENGTH_LONG).show();
+                finish(); // Close the app if permission is denied
+            }
+        }
     }
 }
