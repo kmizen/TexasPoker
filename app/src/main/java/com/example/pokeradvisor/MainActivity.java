@@ -12,9 +12,13 @@ import androidx.core.content.ContextCompat;
 import org.opencv.android.CameraBridgeViewBase;
 import org.opencv.android.JavaCamera2View;
 import org.opencv.android.OpenCVLoader;
+import org.opencv.core.Core;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
+import org.opencv.core.Rect;
 import org.opencv.core.Scalar;
+import org.opencv.core.Size;
+import org.opencv.core.Point;
 import org.opencv.imgproc.Imgproc;
 import java.util.ArrayList;
 import java.util.List;
@@ -55,11 +59,9 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
         super.onResume();
         Log.i(TAG, "onResume called");
 
-        // Check for camera permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
             Log.w(TAG, "Camera permission not granted in onResume");
-            // Request the permission
             ActivityCompat.requestPermissions(this,
                     new String[]{Manifest.permission.CAMERA},
                     CAMERA_PERMISSION_REQUEST_CODE);
@@ -116,31 +118,158 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
     public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame inputFrame) {
         Log.i(TAG, "onCameraFrame called");
         rgbaMat = inputFrame.rgba();
+        Log.d(TAG, "Processing frame: " + rgbaMat.cols() + "x" + rgbaMat.rows());
 
-        // Convert to grayscale
+        // Convert to grayscale for contour detection
         Mat grayMat = new Mat();
         Imgproc.cvtColor(rgbaMat, grayMat, Imgproc.COLOR_RGBA2GRAY);
+        Log.d(TAG, "Converted to grayscale: " + grayMat.cols() + "x" + grayMat.rows());
 
-        // Apply edge detection
-        Mat edges = new Mat();
-        Imgproc.Canny(grayMat, edges, 50, 150);
+        // Apply a blur to reduce noise
+        Imgproc.GaussianBlur(grayMat, grayMat, new Size(5, 5), 0);
+        Log.d(TAG, "Applied blur: " + grayMat.cols() + "x" + grayMat.rows());
+
+        // Apply threshold to enhance edges
+        Mat threshMat = new Mat();
+        Imgproc.threshold(grayMat, threshMat, 100, 255, Imgproc.THRESH_BINARY);
+        Log.d(TAG, "Threshold applied: " + threshMat.cols() + "x" + threshMat.rows());
 
         // Find contours
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
-        Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+        Imgproc.findContours(threshMat, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+        Log.d(TAG, "Contours found: " + contours.size());
 
-        // Draw contours on the original frame
+        // List to store identified cards
+        List<String> identifiedCards = new ArrayList<>();
+
+        // Analyze each contour for card identification
         for (int i = 0; i < contours.size(); i++) {
+            MatOfPoint contour = contours.get(i);
+            double area = Imgproc.contourArea(contour);
+            // Filter out small contours (likely noise)
+            if (area < 5000) {
+                continue;
+            }
+
+            // Get the bounding rectangle for the contour
+            Rect boundingRect = Imgproc.boundingRect(contour);
+            // Ensure the ROI is within the frame bounds
+            if (boundingRect.x < 0 || boundingRect.y < 0 ||
+                    boundingRect.x + boundingRect.width > rgbaMat.cols() ||
+                    boundingRect.y + boundingRect.height > rgbaMat.rows()) {
+                continue;
+            }
+
+            // Extract the ROI (region of interest) for the card
+            Mat roi = rgbaMat.submat(boundingRect);
+
+            // Identify the suit by analyzing the color in the ROI
+            String suit = identifySuit(roi);
+            // Identify the rank by analyzing the top-left corner of the ROI
+            String rank = identifyRank(roi);
+
+            // Combine rank and suit to form the card identifier (e.g., "Kh")
+            if (suit != null && rank != null) {
+                String card = rank + suit;
+                identifiedCards.add(card);
+                Log.d(TAG, "Identified card: " + card);
+            }
+
+            // Draw the contour on the frame in green
             Imgproc.drawContours(rgbaMat, contours, i, new Scalar(0, 255, 0), 2);
+
+            // Release the ROI Mat
+            roi.release();
         }
+
+        // Create a string of identified cards (e.g., "Kh, As, 7d")
+        String displayText = identifiedCards.isEmpty() ? "No cards identified" : String.join(", ", identifiedCards);
+
+        // Draw the text on the frame
+        Imgproc.putText(
+                rgbaMat,
+                displayText,
+                new Point(50, 50), // Position at top-left with some padding
+                Imgproc.FONT_HERSHEY_SIMPLEX,
+                1.0, // Font scale
+                new Scalar(255, 255, 255), // White text
+                2 // Thickness
+        );
+
+        // Add the green overlay
+        Mat overlay = new Mat(rgbaMat.size(), rgbaMat.type(), new Scalar(0, 255, 0, 100));
+        Core.addWeighted(rgbaMat, 0.8, overlay, 0.2, 0.0, rgbaMat);
+        Log.d(TAG, "Green overlay applied");
 
         // Release temporary Mats
         grayMat.release();
-        edges.release();
+        threshMat.release();
         hierarchy.release();
+        overlay.release();
 
         return rgbaMat;
+    }
+
+    // Helper method to identify the suit based on color
+    private String identifySuit(Mat roi) {
+        // Convert ROI to HSV color space for better color detection
+        Mat hsvRoi = new Mat();
+        Imgproc.cvtColor(roi, hsvRoi, Imgproc.COLOR_RGB2HSV);
+
+        // Calculate the average HSV values in the ROI
+        Scalar mean = Core.mean(hsvRoi);
+        double hue = mean.val[0]; // Hue value (0-179 in OpenCV)
+        double saturation = mean.val[1]; // Saturation value (0-255)
+
+        String suit = null;
+        // Detect red (Hearts or Diamonds) or black (Spades or Clubs) based on hue
+        if (saturation > 50) { // Ensure the color is vivid enough (not grayscale)
+            if ((hue < 15 || hue > 165)) { // Red hue range
+                suit = "h"; // We'll simplify and assume Hearts for now
+            } else if (hue >= 90 && hue <= 150) { // Blue/Green range (for black suits in HSV)
+                suit = "s"; // We'll simplify and assume Spades for now
+            }
+        }
+
+        hsvRoi.release();
+        return suit;
+    }
+
+    // Helper method to identify the rank (simplified)
+    private String identifyRank(Mat roi) {
+        // For simplicity, we'll look at the top-left corner of the ROI (where the rank usually is)
+        int cornerSize = Math.min(roi.rows(), roi.cols()) / 4;
+        if (cornerSize <= 0) {
+            return null;
+        }
+        Rect cornerRect = new Rect(0, 0, cornerSize, cornerSize);
+        if (cornerRect.width > roi.cols() || cornerRect.height > roi.rows()) {
+            return null;
+        }
+        Mat corner = roi.submat(cornerRect);
+
+        // Convert to grayscale
+        Mat grayCorner = new Mat();
+        Imgproc.cvtColor(corner, grayCorner, Imgproc.COLOR_RGB2GRAY);
+
+        // Calculate the average intensity in the corner
+        Scalar mean = Core.mean(grayCorner);
+        double intensity = mean.val[0];
+
+        // Simplified rank detection based on intensity (this is a placeholder)
+        String rank;
+        if (intensity < 50) {
+            rank = "A"; // Assuming dark areas might be an Ace
+        } else if (intensity < 100) {
+            rank = "K"; // Assuming slightly lighter areas might be a King
+        } else {
+            rank = "7"; // Default to 7 for now
+        }
+
+        corner.release();
+        grayCorner.release();
+        return rank;
     }
 
     @Override
@@ -154,7 +283,7 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
             } else {
                 Log.w(TAG, "Camera permission denied by user");
                 Toast.makeText(this, "Camera permission is required to use this app", Toast.LENGTH_LONG).show();
-                finish(); // Close the app if permission is denied
+                finish();
             }
         }
     }
