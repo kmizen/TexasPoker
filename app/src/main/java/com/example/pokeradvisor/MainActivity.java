@@ -24,10 +24,12 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
     private static final int CAMERA_PERMISSION_REQUEST_CODE = 100;
     private CameraBridgeViewBase cameraView;
     private Mat mat;
+    private int cameraId = 0; // 0 for rear camera, 1 for front camera
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        Log.i(TAG, "onCreate called");
         setContentView(R.layout.activity_main);
 
         // Initialize OpenCV
@@ -40,16 +42,25 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
         }
 
         cameraView = findViewById(R.id.camera_view);
+        if (cameraView == null) {
+            Log.e(TAG, "cameraView is null - check activity_main.xml layout");
+            Toast.makeText(this, "Camera view not found in layout", Toast.LENGTH_LONG).show();
+            return;
+        }
+
         cameraView.setCvCameraViewListener(this);
+        cameraView.setCameraIndex(cameraId); // Explicitly set camera index (0 = rear, 1 = front)
+        Log.i(TAG, "Camera index set to: " + cameraId);
 
         // Check and request camera permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
+            Log.i(TAG, "Requesting camera permission");
             ActivityCompat.requestPermissions(this,
                     new String[]{Manifest.permission.CAMERA},
                     CAMERA_PERMISSION_REQUEST_CODE);
         } else {
-            // Permission already granted, initialize camera
+            Log.i(TAG, "Camera permission already granted");
             initializeCamera();
         }
     }
@@ -58,12 +69,13 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
                                            @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        Log.i(TAG, "onRequestPermissionsResult called, requestCode: " + requestCode);
         if (requestCode == CAMERA_PERMISSION_REQUEST_CODE) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                // Permission granted, initialize camera
+                Log.i(TAG, "Camera permission granted");
                 initializeCamera();
             } else {
-                // Permission denied
+                Log.w(TAG, "Camera permission denied");
                 Toast.makeText(this, "Camera permission is required to use this app",
                         Toast.LENGTH_LONG).show();
                 finish();
@@ -72,43 +84,61 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
     }
 
     private void initializeCamera() {
-        cameraView.enableView();
+        Log.i(TAG, "initializeCamera called");
+        if (cameraView != null) {
+            cameraView.enableView();
+            Log.i(TAG, "cameraView.enableView called");
+        } else {
+            Log.e(TAG, "cameraView is null in initializeCamera");
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        Log.i(TAG, "onResume called");
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED) {
             if (cameraView != null) {
                 cameraView.enableView();
+                Log.i(TAG, "cameraView.enableView called in onResume");
+            } else {
+                Log.e(TAG, "cameraView is null in onResume");
             }
+        } else {
+            Log.w(TAG, "Camera permission not granted in onResume");
         }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        Log.i(TAG, "onPause called");
         if (cameraView != null) {
             cameraView.disableView();
+            Log.i(TAG, "cameraView.disableView called in onPause");
         }
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        Log.i(TAG, "onDestroy called");
         if (cameraView != null) {
             cameraView.disableView();
+            Log.i(TAG, "cameraView.disableView called in onDestroy");
         }
     }
 
     @Override
     public void onCameraViewStarted(int width, int height) {
+        Log.i(TAG, "onCameraViewStarted called, width: " + width + ", height: " + height);
         mat = new Mat();
     }
 
     @Override
     public void onCameraViewStopped() {
+        Log.i(TAG, "onCameraViewStopped called");
         if (mat != null) {
             mat.release();
         }
@@ -116,6 +146,7 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
 
     @Override
     public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame inputFrame) {
+        Log.i(TAG, "onCameraFrame called");
         mat = inputFrame.rgba();
         Mat gray = new Mat();
         Imgproc.cvtColor(mat, gray, Imgproc.COLOR_RGBA2GRAY);
