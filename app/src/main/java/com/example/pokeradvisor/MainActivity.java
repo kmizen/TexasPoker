@@ -2,6 +2,9 @@ package com.example.pokeradvisor;
 
 import android.Manifest;
 import android.content.pm.PackageManager;
+import android.content.res.AssetManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.os.Bundle;
 import android.util.Log;
 import android.widget.Toast;
@@ -12,6 +15,7 @@ import androidx.core.content.ContextCompat;
 import org.opencv.android.CameraBridgeViewBase;
 import org.opencv.android.JavaCamera2View;
 import org.opencv.android.OpenCVLoader;
+import org.opencv.android.Utils;
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
@@ -20,6 +24,8 @@ import org.opencv.core.Scalar;
 import org.opencv.core.Size;
 import org.opencv.core.Point;
 import org.opencv.imgproc.Imgproc;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -237,65 +243,110 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
         return rgbaMat;
     }
 
-    // Helper method to identify the suit based on color
+    // Helper method to identify the suit based on template matching
     private String identifySuit(Mat roi) {
-        // Convert ROI to HSV color space for better color detection
-        Mat hsvRoi = new Mat();
-        Imgproc.cvtColor(roi, hsvRoi, Imgproc.COLOR_RGB2HSV);
+        try {
+            // Convert ROI to grayscale
+            Mat grayRoi = new Mat();
+            Imgproc.cvtColor(roi, grayRoi, Imgproc.COLOR_RGB2GRAY);
 
-        // Calculate the average HSV values in the ROI
-        Scalar mean = Core.mean(hsvRoi);
-        double hue = mean.val[0]; // Hue value (0-179 in OpenCV)
-        double saturation = mean.val[1]; // Saturation value (0-255)
+            String[] suits = {"h", "s", "d", "c"};
+            String bestSuit = null;
+            double bestScore = -1;
 
-        String suit = null;
-        // Detect red (Hearts or Diamonds) or black (Spades or Clubs) based on hue
-        if (saturation > 50) { // Ensure the color is vivid enough (not grayscale)
-            if ((hue < 15 || hue > 165)) { // Red hue range
-                suit = "h"; // We'll simplify and assume Hearts for now
-            } else if (hue >= 90 && hue <= 150) { // Blue/Green range (for black suits in HSV)
-                suit = "s"; // We'll simplify and assume Spades for now
+            for (String suit : suits) {
+                Mat template = loadTemplateFromAssets("suit_" + suit + ".png");
+                if (template == null) continue;
+
+                // Ensure template is grayscale
+                Mat grayTemplate = new Mat();
+                if (template.channels() == 3) {
+                    Imgproc.cvtColor(template, grayTemplate, Imgproc.COLOR_RGB2GRAY);
+                } else {
+                    grayTemplate = template;
+                }
+
+                Mat result = new Mat();
+                Imgproc.matchTemplate(grayRoi, grayTemplate, result, Imgproc.TM_CCOEFF_NORMED);
+                double score = Core.minMaxLoc(result).maxVal;
+
+                if (score > bestScore && score > 0.7) {
+                    bestScore = score;
+                    bestSuit = suit;
+                }
+
+                template.release();
+                result.release();
+                if (grayTemplate != template) {
+                    grayTemplate.release();
+                }
             }
-        }
 
-        hsvRoi.release();
-        return suit;
+            grayRoi.release();
+            return bestSuit;
+        } catch (Exception e) {
+            Log.e(TAG, "Exception in identifySuit", e);
+            return null;
+        }
     }
 
-    // Helper method to identify the rank (simplified)
+    // Helper method to identify the rank using template matching
     private String identifyRank(Mat roi) {
-        // For simplicity, we'll look at the top-left corner of the ROI (where the rank usually is)
+        Mat grayRoi = new Mat();
+        Imgproc.cvtColor(roi, grayRoi, Imgproc.COLOR_RGB2GRAY);
         int cornerSize = Math.min(roi.rows(), roi.cols()) / 4;
         if (cornerSize <= 0) {
+            grayRoi.release();
             return null;
         }
         Rect cornerRect = new Rect(0, 0, cornerSize, cornerSize);
         if (cornerRect.width > roi.cols() || cornerRect.height > roi.rows()) {
+            grayRoi.release();
             return null;
         }
-        Mat corner = roi.submat(cornerRect);
+        Mat corner = grayRoi.submat(cornerRect);
 
-        // Convert to grayscale
-        Mat grayCorner = new Mat();
-        Imgproc.cvtColor(corner, grayCorner, Imgproc.COLOR_RGB2GRAY);
+        String[] ranks = {"A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3", "2"};
+        String bestRank = null;
+        double bestScore = -1;
 
-        // Calculate the average intensity in the corner
-        Scalar mean = Core.mean(grayCorner);
-        double intensity = mean.val[0];
+        for (String rank : ranks) {
+            Mat template = loadTemplateFromAssets("rank_" + rank + ".png");
+            if (template == null) continue;
 
-        // Simplified rank detection based on intensity (this is a placeholder)
-        String rank;
-        if (intensity < 50) {
-            rank = "A"; // Assuming dark areas might be an Ace
-        } else if (intensity < 100) {
-            rank = "K"; // Assuming slightly lighter areas might be a King
-        } else {
-            rank = "7"; // Default to 7 for now
+            Mat result = new Mat();
+            Imgproc.matchTemplate(corner, template, result, Imgproc.TM_CCOEFF_NORMED);
+            double score = Core.minMaxLoc(result).maxVal;
+
+            if (score > bestScore && score > 0.7) {
+                bestScore = score;
+                bestRank = rank;
+            }
+
+            template.release();
+            result.release();
         }
 
         corner.release();
-        grayCorner.release();
-        return rank;
+        grayRoi.release();
+        return bestRank;
+    }
+
+    // Helper method to load template images from assets
+    private Mat loadTemplateFromAssets(String filename) {
+        try {
+            AssetManager assetManager = getAssets();
+            InputStream inputStream = assetManager.open(filename);
+            Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
+            inputStream.close();
+            Mat template = new Mat();
+            Utils.bitmapToMat(bitmap, template);
+            Imgproc.cvtColor(template, template, Imgproc.COLOR_BGR2GRAY);
+            return template;
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to load template: " + filename, e);
+            return null;
+        }
     }
 
     @Override
