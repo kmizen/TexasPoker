@@ -34,10 +34,13 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
     private static final String TAG = "PokerAdvisor";
     private static final int CAMERA_PERMISSION_REQUEST_CODE = 100;
     private static final long FRAME_PROCESS_INTERVAL_MS = 2000; // Process every 2 seconds
+    private static final long UPDATE_INTERVAL = 1000; // Update text every 1 second (in milliseconds)
 
     private JavaCamera2View cameraView;
     private Mat rgbaMat;
     private long lastProcessedTime = 0;
+    private String lastDisplayedText = ""; // Track the last displayed text
+    private long lastUpdateTime = 0; // Track the last time the text was updated
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -132,6 +135,18 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
             // Add the green overlay even on skipped frames to maintain visual consistency
             Mat overlay = new Mat(rgbaMat.size(), rgbaMat.type(), new Scalar(0, 255, 0, 100));
             Core.addWeighted(rgbaMat, 0.8, overlay, 0.2, 0.0, rgbaMat);
+
+            // Draw the last displayed text on skipped frames
+            Imgproc.putText(
+                    rgbaMat,
+                    lastDisplayedText,
+                    new Point(50, 50),
+                    Imgproc.FONT_HERSHEY_SIMPLEX,
+                    1.0,
+                    new Scalar(255, 255, 255),
+                    2
+            );
+
             overlay.release();
             return rgbaMat;
         }
@@ -215,17 +230,23 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
         }
 
         // Create a string of identified cards (e.g., "Kh, As, 7d")
-        String displayText = identifiedCards.isEmpty() ? "No cards identified" : String.join(", ", identifiedCards);
+        String currentText = identifiedCards.isEmpty() ? "No cards identified" : String.join(", ", identifiedCards);
+
+        // Only update the text if it has changed or enough time has passed
+        if (!currentText.equals(lastDisplayedText) || (System.currentTimeMillis() - lastUpdateTime > UPDATE_INTERVAL)) {
+            lastDisplayedText = currentText;
+            lastUpdateTime = System.currentTimeMillis();
+        }
 
         // Draw the text on the frame
         Imgproc.putText(
                 rgbaMat,
-                displayText,
-                new Point(50, 50), // Position at top-left with some padding
+                lastDisplayedText,
+                new Point(50, 50),
                 Imgproc.FONT_HERSHEY_SIMPLEX,
-                1.0, // Font scale
-                new Scalar(255, 255, 255), // White text
-                2 // Thickness
+                1.0,
+                new Scalar(255, 255, 255),
+                2
         );
 
         // Add the green overlay after processing to avoid interference
