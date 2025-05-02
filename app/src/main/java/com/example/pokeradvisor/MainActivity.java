@@ -28,6 +28,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.Text;
+import com.google.android.gms.tasks.Task;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 public class MainActivity extends AppCompatActivity implements CameraBridgeViewBase.CvCameraViewListener2 {
 
@@ -129,186 +135,118 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
     public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame inputFrame) {
         rgbaMat = inputFrame.rgba();
 
-        // Throttle frame processing to once every 2 seconds
         long currentTime = System.currentTimeMillis();
         if (currentTime - lastProcessedTime < FRAME_PROCESS_INTERVAL_MS) {
-            // Add the green overlay even on skipped frames to maintain visual consistency
             Mat overlay = new Mat(rgbaMat.size(), rgbaMat.type(), new Scalar(0, 255, 0, 100));
             Core.addWeighted(rgbaMat, 0.8, overlay, 0.2, 0.0, rgbaMat);
-
-            // Draw the last displayed text on skipped frames
-            Imgproc.putText(
-                    rgbaMat,
-                    lastDisplayedText,
-                    new Point(50, 50),
-                    Imgproc.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    new Scalar(255, 255, 255),
-                    2
-            );
-
+            Imgproc.putText(rgbaMat, lastDisplayedText, new Point(50, 50), Imgproc.FONT_HERSHEY_SIMPLEX, 1.0, new Scalar(255, 255, 255), 2);
             overlay.release();
             return rgbaMat;
         }
         lastProcessedTime = currentTime;
 
-        Log.d(TAG, "Processing frame: " + rgbaMat.cols() + "x" + rgbaMat.rows());
+        Bitmap bitmap = Bitmap.createBitmap(rgbaMat.cols(), rgbaMat.rows(), Bitmap.Config.ARGB_8888);
+        Utils.matToBitmap(rgbaMat, bitmap);
 
-        // Convert to HSV for color-based segmentation
-        Mat hsvMat = new Mat();
-        Imgproc.cvtColor(rgbaMat, hsvMat, Imgproc.COLOR_RGB2HSV);
-        Log.d(TAG, "Converted to HSV: " + hsvMat.cols() + "x" + hsvMat.rows());
+        InputImage image = InputImage.fromBitmap(bitmap, 0);
+        TextRecognizer recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
 
-        // Create a mask for white regions (cards have a white background)
-        Mat mask = new Mat();
-        // White in HSV: Hue doesn't matter, low saturation, high value
-        Scalar lowerWhite = new Scalar(0, 0, 200); // Low saturation, high value
-        Scalar upperWhite = new Scalar(179, 50, 255); // Allow some variation
-        Core.inRange(hsvMat, lowerWhite, upperWhite, mask);
-        Log.d(TAG, "White mask created: " + mask.cols() + "x" + mask.rows());
+        recognizer.process(image)
+                .addOnSuccessListener(text -> {
+                    StringBuilder resultText = new StringBuilder();
+                    for (Text.TextBlock block : text.getTextBlocks()) {
+                        String blockText = block.getText().trim();
+                        Log.d(TAG, "OCR Block Text: " + blockText);
+                        if (isCardText(blockText)) {
+                            resultText.append(blockText).append(", ");
+                        }
+                    }
+                    synchronized (this) {
+                        lastDisplayedText = resultText.length() > 0 ? resultText.substring(0, resultText.length() - 2) : "No cards identified";
+                        lastUpdateTime = System.currentTimeMillis();
+                    }
+                    bitmap.recycle(); // Recycle after OCR completes
+                })
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "OCR Failed: " + e.getMessage());
+                    synchronized (this) {
+                        lastDisplayedText = "OCR Error";
+                        lastUpdateTime = System.currentTimeMillis();
+                    }
+                    bitmap.recycle(); // Recycle after OCR completes
+                });
 
-        // Apply morphological operations to clean up the mask
-        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(5, 5));
-        Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_OPEN, kernel); // Remove noise
-        Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, kernel); // Close small gaps
-        Log.d(TAG, "Morphological operations applied");
-
-        // Find contours on the mask
-        List<MatOfPoint> contours = new ArrayList<>();
-        Mat hierarchy = new Mat();
-        Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
-        Log.d(TAG, "Contours found: " + contours.size());
-
-        // List to store identified cards
-        List<String> identifiedCards = new ArrayList<>();
-
-        // Analyze each contour for card identification
-        for (int i = 0; i < contours.size(); i++) {
-            MatOfPoint contour = contours.get(i);
-            double area = Imgproc.contourArea(contour);
-            // Filter out small contours (likely noise)
-            if (area < 500) { // Lowered threshold to capture smaller cards
-                continue;
-            }
-
-            // Get the bounding rectangle for the contour
-            Rect boundingRect = Imgproc.boundingRect(contour);
-
-            // Filter by aspect ratio (cards are typically 2.5:3.5, so aspect ratio ~0.714)
-            double aspectRatio = (double) boundingRect.width / boundingRect.height;
-            if (aspectRatio < 0.4 || aspectRatio > 1.0) { // Relaxed range to allow for overlapping cards
-                continue;
-            }
-
-            // Ensure the ROI is within the frame bounds
-            if (boundingRect.x < 0 || boundingRect.y < 0 ||
-                    boundingRect.x + boundingRect.width > rgbaMat.cols() ||
-                    boundingRect.y + boundingRect.height > rgbaMat.rows()) {
-                continue;
-            }
-
-            // Extract the ROI (region of interest) for the card
-            Mat roi = rgbaMat.submat(boundingRect);
-
-            // Identify the suit by analyzing the color in the ROI
-            String suit = identifySuit(roi);
-            // Identify the rank by analyzing the top-left corner of the ROI
-            String rank = identifyRank(roi);
-
-            // Combine rank and suit to form the card identifier (e.g., "Kh")
-            if (suit != null && rank != null) {
-                String card = rank + suit;
-                identifiedCards.add(card);
-                Log.d(TAG, "Identified card: " + card);
-            }
-
-            // Draw the contour on the frame in green
-            Imgproc.drawContours(rgbaMat, contours, i, new Scalar(0, 255, 0), 2);
-
-            // Release the ROI Mat
-            roi.release();
-        }
-
-        // Create a string of identified cards (e.g., "Kh, As, 7d")
-        String currentText = identifiedCards.isEmpty() ? "No cards identified" : String.join(", ", identifiedCards);
-
-        // Only update the text if it has changed or enough time has passed
-        if (!currentText.equals(lastDisplayedText) || (System.currentTimeMillis() - lastUpdateTime > UPDATE_INTERVAL)) {
-            lastDisplayedText = currentText;
-            lastUpdateTime = System.currentTimeMillis();
-        }
-
-        // Draw the text on the frame
-        Imgproc.putText(
-                rgbaMat,
-                lastDisplayedText,
-                new Point(50, 50),
-                Imgproc.FONT_HERSHEY_SIMPLEX,
-                1.0,
-                new Scalar(255, 255, 255),
-                2
-        );
-
-        // Add the green overlay after processing to avoid interference
         Mat overlay = new Mat(rgbaMat.size(), rgbaMat.type(), new Scalar(0, 255, 0, 100));
         Core.addWeighted(rgbaMat, 0.8, overlay, 0.2, 0.0, rgbaMat);
-        Log.d(TAG, "Green overlay applied");
-
-        // Release temporary Mats
-        hsvMat.release();
-        mask.release();
-        hierarchy.release();
+        Imgproc.putText(rgbaMat, lastDisplayedText, new Point(50, 50), Imgproc.FONT_HERSHEY_SIMPLEX, 1.0, new Scalar(255, 255, 255), 2);
         overlay.release();
-        kernel.release();
 
         return rgbaMat;
     }
 
+    // Helper method to validate card text (e.g., "Kh", "10s")
+    private boolean isCardText(String text) {
+        String pattern = "^[AKQJ10][hscd]$|^[2-9][hscd]$";
+        return text.matches(pattern);
+    }
+
     // Helper method to identify the suit based on template matching
     private String identifySuit(Mat roi) {
-        try {
-            // Convert ROI to grayscale
-            Mat grayRoi = new Mat();
-            Imgproc.cvtColor(roi, grayRoi, Imgproc.COLOR_RGB2GRAY);
+        // Convert ROI to grayscale
+        Mat grayRoi = new Mat();
+        Imgproc.cvtColor(roi, grayRoi, Imgproc.COLOR_RGB2GRAY);
+        Log.d(TAG, "Original grayRoi size: " + grayRoi.cols() + "x" + grayRoi.rows());
 
-            String[] suits = {"h", "s", "d", "c"};
-            String bestSuit = null;
-            double bestScore = -1;
+        String[] suits = {"h", "s", "d", "c"};
+        String bestSuit = null;
+        double bestScore = -1;
 
-            for (String suit : suits) {
-                Mat template = loadTemplateFromAssets("suit_" + suit + ".png");
-                if (template == null) continue;
-
-                // Ensure template is grayscale
-                Mat grayTemplate = new Mat();
-                if (template.channels() == 3) {
-                    Imgproc.cvtColor(template, grayTemplate, Imgproc.COLOR_RGB2GRAY);
-                } else {
-                    grayTemplate = template;
-                }
-
-                Mat result = new Mat();
-                Imgproc.matchTemplate(grayRoi, grayTemplate, result, Imgproc.TM_CCOEFF_NORMED);
-                double score = Core.minMaxLoc(result).maxVal;
-
-                if (score > bestScore && score > 0.7) {
-                    bestScore = score;
-                    bestSuit = suit;
-                }
-
-                template.release();
-                result.release();
-                if (grayTemplate != template) {
-                    grayTemplate.release();
-                }
+        for (String suit : suits) {
+            Mat template = loadTemplateFromAssets("suit_" + suit + ".png");
+            if (template == null) {
+                Log.w(TAG, "Failed to load template: suit_" + suit + ".png");
+                continue;
             }
 
-            grayRoi.release();
-            return bestSuit;
-        } catch (Exception e) {
-            Log.e(TAG, "Exception in identifySuit", e);
-            return null;
+            // Ensure template is grayscale
+            Mat grayTemplate = new Mat();
+            if (template.channels() == 3) {
+                Imgproc.cvtColor(template, grayTemplate, Imgproc.COLOR_RGB2GRAY);
+            } else {
+                grayTemplate = template;
+            }
+            Log.d(TAG, "Template suit_" + suit + " size: " + grayTemplate.cols() + "x" + grayTemplate.rows());
+
+            // Ensure grayRoi is at least as large as grayTemplate
+            if (grayTemplate.cols() > grayRoi.cols() || grayTemplate.rows() > grayRoi.rows()) {
+                int newWidth = Math.max(grayRoi.cols(), grayTemplate.cols());
+                int newHeight = Math.max(grayRoi.rows(), grayTemplate.rows());
+                Mat resizedRoi = new Mat();
+                Imgproc.resize(grayRoi, resizedRoi, new Size(newWidth, newHeight));
+                grayRoi.release();
+                grayRoi = resizedRoi;
+                Log.d(TAG, "Resized grayRoi to: " + grayRoi.cols() + "x" + grayRoi.rows());
+            }
+
+            Mat result = new Mat();
+            Imgproc.matchTemplate(grayRoi, grayTemplate, result, Imgproc.TM_CCOEFF_NORMED);
+            double score = Core.minMaxLoc(result).maxVal;
+            Log.d(TAG, "Template matching score for suit_" + suit + ": " + score);
+
+            if (score > bestScore && score > 0.7) {
+                bestScore = score;
+                bestSuit = suit;
+            }
+
+            template.release();
+            result.release();
+            if (grayTemplate != template) {
+                grayTemplate.release();
+            }
         }
+
+        grayRoi.release();
+        return bestSuit;
     }
 
     // Helper method to identify the rank using template matching
@@ -321,11 +259,12 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
             return null;
         }
         Rect cornerRect = new Rect(0, 0, cornerSize, cornerSize);
-        if (cornerRect.width > roi.cols() || cornerRect.height > roi.rows()) {
+        if (cornerRect.width > grayRoi.cols() || cornerRect.height > grayRoi.rows()) {
             grayRoi.release();
             return null;
         }
         Mat corner = grayRoi.submat(cornerRect);
+        Log.d(TAG, "Extracted corner for rank: " + corner.cols() + "x" + corner.rows());
 
         String[] ranks = {"A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3", "2"};
         String bestRank = null;
@@ -333,11 +272,28 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
 
         for (String rank : ranks) {
             Mat template = loadTemplateFromAssets("rank_" + rank + ".png");
-            if (template == null) continue;
+            if (template == null) {
+                Log.w(TAG, "Failed to load template: rank_" + rank + ".png");
+                continue;
+            }
+
+            Log.d(TAG, "Loaded template for rank_" + rank + ": " + template.cols() + "x" + template.rows());
+
+            // Ensure corner is at least as large as template
+            if (template.cols() > corner.cols() || template.rows() > corner.rows()) {
+                int newWidth = Math.max(corner.cols(), template.cols());
+                int newHeight = Math.max(corner.rows(), template.rows());
+                Mat resizedCorner = new Mat();
+                Imgproc.resize(corner, resizedCorner, new Size(newWidth, newHeight));
+                corner.release();
+                corner = resizedCorner;
+                Log.d(TAG, "Resized corner for rank_" + rank + " to: " + corner.cols() + "x" + corner.rows());
+            }
 
             Mat result = new Mat();
             Imgproc.matchTemplate(corner, template, result, Imgproc.TM_CCOEFF_NORMED);
             double score = Core.minMaxLoc(result).maxVal;
+            Log.d(TAG, "Template matching score for rank_" + rank + ": " + score);
 
             if (score > bestScore && score > 0.7) {
                 bestScore = score;
@@ -360,12 +316,12 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
             InputStream inputStream = assetManager.open(filename);
             Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
             inputStream.close();
+            if (bitmap == null) return null;
             Mat template = new Mat();
             Utils.bitmapToMat(bitmap, template);
             Imgproc.cvtColor(template, template, Imgproc.COLOR_BGR2GRAY);
             return template;
         } catch (IOException e) {
-            Log.e(TAG, "Failed to load template: " + filename, e);
             return null;
         }
     }
